@@ -1,0 +1,10 @@
+# AgentDojo evaluation harness dependencies.
+# Install into the SAME virtualenv where you `pip install -e ".[dev]"` the public
+# Super Tanks package (so `core.security.zef_injection_filter` is importable).
+agentdojo==0.1.35
+# openai 3.x is what agentdojo 0.1.35 uses via its OpenAILLM backend (verified 3.6.0).
+openai>=3.0,<4
+# Evaluation scripts (eval_outputs.py, eval_robustness.py): intervals and AUC.
+# Not needed by Super Tanks at runtime.
+numpy==2.4.2  # same pin as super-tanks/requirements.txt (shared venv)
+scikit-learn==1.9.1

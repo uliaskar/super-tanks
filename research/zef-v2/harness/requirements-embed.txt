@@ -1,0 +1,7 @@
+# Separate environment harness/.venv-embed (PyTorch is too heavy for the shared one).
+# embed_st.py embeds text for phrase similarity (paraphrase-multilingual-MiniLM).
+sentence-transformers==6.2.0
+torch>=2.6
+# Only for comparing instruction-detector candidates (features_spacy.py), plus its
+# small models: python -m spacy download en_core_web_sm nb_core_news_sm ru_core_news_sm
+spacy==3.8.17
