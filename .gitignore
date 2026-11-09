@@ -23,6 +23,7 @@ config/zef_baseline.json
 research/zef-v2/harness/.env
 research/zef-v2/harness/.venv-embed/
 research/zef-v2/harness/results/
+research/zef-v2/harness/runs/
 
 # generated at install time (python -m supertanks seal); never commit
 core/diq/DIQ_CHECKSUMS.json
