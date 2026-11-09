@@ -36,6 +36,7 @@ dependencies = [
     "python-dateutil>=2.9",
     "cryptography>=44.0",
     "watchdog>=6.0",
+    "confusables==1.2.0",  # zef_normalize: Unicode confusables table (pinned)
 ]
 
 [project.optional-dependencies]
@@ -44,6 +45,10 @@ llm = ["openai>=2.0", "google-genai>=1.0", "numpy>=2.0", "chromadb>=1.5"]
 smarthome = ["paho-mqtt>=2.1"]
 web = ["duckduckgo-search>=8.0", "playwright>=1.55", "beautifulsoup4>=4.13", "markdownify>=1.0"]
 voice = ["faster-whisper>=1.2", "sounddevice>=0.5", "torch>=2.6"]
+# ZEF detectors for tool outputs (ST_ZEF_DETECTORS=1; model via scripts/zef_fetch_model.py).
+# zef-gpu runs phrase similarity on an NVIDIA GPU (CUDA); install one of the two, not both.
+zef = ["onnxruntime>=1.31", "tokenizers>=0.23", "numpy>=2.0"]
+zef-gpu = ["onnxruntime-gpu>=1.31", "tokenizers>=0.23", "numpy>=2.0"]
 dev = [
     "pytest>=9.0",
     "pytest-asyncio>=1.3",

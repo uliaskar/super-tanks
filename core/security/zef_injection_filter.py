@@ -18,63 +18,16 @@ Called from:
 import logging
 import os
 import re
-import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Tuple
 
+# Look-alike letters, invisible characters and encodings are undone in
+# zef_normalize.py (full Unicode confusables table, decoding of escapes, URL
+# encoding, HTML entities and readable base64).
+from .zef_normalize import canonical, readable
+
 logger = logging.getLogger("zef.injection_filter")
-
-
-# Cyrillic and Greek characters that visually masquerade as Latin
-# letters. Folded to their ASCII look-alike before pattern matching so
-# Cyrillic-spoofed "ignore" (with U+0456) is treated the same as ASCII.
-# Norwegian aaeo are NOT in this table; they survive normalisation.
-_CONFUSABLES = {
-    # Cyrillic to Latin (lowercase)
-    "а": "a", "е": "e", "о": "o", "р": "p",
-    "с": "c", "у": "y", "х": "x", "і": "i",
-    "ј": "j", "ѕ": "s", "к": "k", "м": "m",
-    "т": "t", "ѵ": "v",
-    # Cyrillic to Latin (uppercase)
-    "А": "A", "Е": "E", "О": "O", "Р": "P",
-    "С": "C", "Т": "T", "Х": "X", "І": "I",
-    "Ј": "J", "Ѕ": "S", "К": "K", "М": "M",
-    "В": "B", "Н": "H",
-    # Greek to Latin
-    "ο": "o", "α": "a", "ν": "v",
-    "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z",
-    "Η": "H", "Ι": "I", "Κ": "K", "Μ": "M",
-    "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T",
-    "Υ": "Y", "Χ": "X",
-}
-
-
-def _normalize(text: str) -> str:
-    """Defeat the homoglyph + invisible-character bypasses.
-
-    Three passes:
-      1. NFKC collapses compatibility variants (full-width, ligatures,
-         superscripts) to canonical form.
-      2. Strip Unicode category Cf (format) — zero-width space, joiner,
-         non-joiner, BOM, etc. These let an attacker break the regex
-         word boundary inside a keyword.
-      3. Map known Cyrillic/Greek look-alikes to ASCII. Without this,
-         a leading Cyrillic 'i' is not matched by a regex compiled
-         against ASCII 'i'.
-
-    Combining marks (Mn) are NOT stripped — that would damage Norwegian
-    text where the precomposed 'aa with ring' decomposes to a + ring.
-    """
-    if not text:
-        return text
-    nfkc = unicodedata.normalize("NFKC", text)
-    cleaned = []
-    for ch in nfkc:
-        if unicodedata.category(ch) == "Cf":
-            continue
-        cleaned.append(_CONFUSABLES.get(ch, ch))
-    return "".join(cleaned)
 
 
 class FilterVerdict(Enum):
@@ -88,6 +41,10 @@ class FilterResult:
     verdict: FilterVerdict
     message: str
     matched_patterns: List[str] = field(default_factory=list)
+    # segments the ZEF detectors flagged (zef_combine.scan_tool_result); empty otherwise
+    flagged_segments: List[str] = field(default_factory=list)
+    # on a detectors' WARN: the sentences to remove from the tool output
+    remove: List[str] = field(default_factory=list)
 
 
 # ── Pattern catalogue ──────────────────────────────────────────────────────
@@ -166,7 +123,17 @@ INJECTION_PATTERNS: List[Tuple[str, str]] = [
     (r"soul_integrity\.json", "config_tamper"),
     # Sleeper actions — background/scheduled tasks (no agent should create these)
     (r"\bcrontab\b", "sleeper_action"),
-    (r"\bat\s+\d", "sleeper_action"),
+    # The Unix `at` scheduler, only in command form. A bare "at <digit>" matched
+    # ordinary times ("meeting at 10") in ~11 % of benign workspace outputs.
+    # Listing/removing jobs (atq, atrm, at -l/-r) leaves nothing behind: not matched.
+    #   a quoted command or a file piped into at:  echo '...' | at 03:00
+    (r"(?:\b(?:echo|printf)\s+(?:'[^'\n]*'|\"[^\"\n]*\")|\bcat\s+\S+)\s*\|\s*at\s+(?:now|noon|midnight|teatime|tomorrow|\d)", "sleeper_action"),
+    #   at runs a script file:  at -f /tmp/x.sh 23:00  /  at 10:00 tomorrow -f job.sh
+    (r"\bat\s+(?:(?:now|noon|midnight|teatime|tomorrow|\d)[^\n]{0,30}\s)?-f\s+(?:\S*/\S+|\S+\.\w+)", "sleeper_action"),
+    #   commands fed through a here-doc or here-string:  at 03:00 <<< '...'
+    (r"\bat\s+(?:now|noon|midnight|teatime|tomorrow|\d)[^\n]{0,30}<<", "sleeper_action"),
+    #   relative time spec, never used in prose:  at now + 5 minutes
+    (r"\bat\s+now\s*\+\s*\d+\s*(?:min|minute|hour|day|week)", "sleeper_action"),
     (r"\bnohup\s+.+\s+&", "sleeper_action"),
     (r"\bscreen\s+-dm", "sleeper_action"),
     (r"\btmux\s+new.*-d", "sleeper_action"),
@@ -231,7 +198,12 @@ def scan_message(message: str, source: str = "unknown") -> FilterResult:
     Returns:
         FilterResult with verdict PASS / WARN / BLOCK.
     """
-    lowered = _normalize(message).lower()
+    # Match against the text as given AND as readable() decodes it. YAML/JSON
+    # tool results carry line breaks as a literal "\n", which glues an "n" onto
+    # the next word and defeats \b; escaped or encoded text would otherwise
+    # skip the look-alike fold. A pattern counts if either form matches, so
+    # this can only add matches.
+    forms = {canonical(message).lower(), canonical(readable(message)).lower()}
     matched: List[str] = []
     high_conf_hit = False
     is_admin = source in _ADMIN_SOURCES
@@ -240,7 +212,7 @@ def scan_message(message: str, source: str = "unknown") -> FilterResult:
         # Skip agent-only categories for admin messages
         if is_admin and category in _AGENT_ONLY_CATEGORIES:
             continue
-        if re.search(pattern, lowered, re.DOTALL):
+        if any(re.search(pattern, form, re.DOTALL) for form in forms):
             tag = f"{category}: {pattern}"
             matched.append(tag)
             if category in HIGH_CONFIDENCE_CATEGORIES:

@@ -463,7 +463,11 @@ def _scan_response_for_injection(
         if not text or len(text) < 8:
             return resp
         from core.security.zef_injection_filter import scan_message, FilterVerdict
+        from core.security.zef_combine import scan_tool_result
         verdict = scan_message(text, source=f"tool_output:{tool_name}")
+        # ZEF detectors (off unless ST_ZEF_DETECTORS=1) read the result's own
+        # structure, so they get the object, not the flattened text
+        verdict = scan_tool_result(resp.result, verdict)
         kind, patterns = verdict.verdict, list(verdict.matched_patterns)
         if not isinstance(kind, FilterVerdict):
             raise TypeError(f"scan_message returned verdict {kind!r}")
@@ -477,6 +481,20 @@ def _scan_response_for_injection(
             error="Tool output could not be scanned for prompt injection and was withheld.",
             metadata={"output_scan_failed": True},
         )
+    result = resp.result
+    if kind is FilterVerdict.WARN and verdict.remove:
+        # A detectors' WARN: the flagged sentences and their neighbours are
+        # removed, the rest is forwarded. Fail closed: flagged text that
+        # cannot be removed is not forwarded.
+        from core.security.zef_combine import remove_sentences
+        try:
+            result = remove_sentences(resp.result, verdict.remove)
+        except Exception as remove_err:
+            logger.error("[gateway] removing flagged sentences failed for %s: %s corr=%s",
+                         tool_name, remove_err, corr_id)
+            result = None
+        if result is None:
+            kind = FilterVerdict.BLOCK
     if kind is FilterVerdict.BLOCK:
         logger.warning(
             "[gateway] indirect-injection BLOCKED in %s output corr=%s patterns=%s",
@@ -503,18 +521,19 @@ def _scan_response_for_injection(
         # instructions. This closes the WARN-level half of R-02 — the
         # BLOCK branch above only caught high-confidence payloads.
         logger.info(
-            "[gateway] tool output from %s flagged untrusted (WARN) corr=%s patterns=%s",
-            tool_name, corr_id, patterns,
+            "[gateway] tool output from %s flagged untrusted (WARN) corr=%s patterns=%s removed=%d",
+            tool_name, corr_id, patterns, len(verdict.remove),
         )
         merged = dict(resp.metadata or {})
         merged.update({
             "untrusted_content": True,
             "provenance": "external_tool_output",
             "provenance_warnings": patterns,
+            "removed_sentences": len(verdict.remove),
         })
         return ToolResponse(
             success=resp.success,
-            result=resp.result,
+            result=result,
             error=resp.error,
             metadata=merged,
         )

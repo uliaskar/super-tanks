@@ -19,6 +19,11 @@ vendor/
 config/voice_rooms.json
 config/zef_baseline.json
 
+# ZEF research harness: keys, its embedding environment, agent-test results
+research/zef-v2/harness/.env
+research/zef-v2/harness/.venv-embed/
+research/zef-v2/harness/results/
+
 # generated at install time (python -m supertanks seal); never commit
 core/diq/DIQ_CHECKSUMS.json
 core/soul_integrity.json
